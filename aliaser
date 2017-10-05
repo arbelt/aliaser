@@ -102,7 +102,7 @@ conditions - see LICENSE for details.\n\n"
 
 'test' | 'verify')  mac-grab
 	private-grab
-	curltest=$(curl -s -f --interface ${PRIVATE[@]:1} ifconfig.me)
+	curltest=$(curl -s -f --interface ${PRIVATE[@]:1} ipinfo.io/ip)
  	printf "Secondary public IP: %s\n" "$curltest"
 	;;
 
