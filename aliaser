@@ -21,8 +21,10 @@ fi
 
 #case $ETHINT in 
 
+ETHINT=ens3
+
 function mac-grab {
-	MAC_ADDR=$(ifconfig eth0 | sed -n 's/.*ether \([a-f0-9:]*\).*/\1/p')
+	MAC_ADDR=$(ifconfig $ETHINT | sed -n 's/.*ether \([a-f0-9:]*\).*/\1/p')
 }
 
 function public-grab {
@@ -41,7 +43,7 @@ function private-loop {
 	for priv in ${PRIVATE[@]:1};
         do
                 echo "Adding IP: $priv"
-                ip addr add dev eth0 $priv/$SUBNET_CIDR_BLOCK
+                ip addr add dev $ETHINT $priv/$SUBNET_CIDR_BLOCK
         done
 }
 
