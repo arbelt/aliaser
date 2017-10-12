@@ -8,10 +8,10 @@
 
 if [ $# -lt 1 ]
 then
-        echo "No command specified"  
-	echo "Usage: $0 start, $0 stop, $0 restart, $0 print or $0 test"
-	echo "Execute $0 -h or $0 help for more detailed usage information"
-        exit
+    echo "No command specified"
+    echo "Usage: $0 start, $0 stop, $0 restart, $0 print or $0 test"
+    echo "Execute $0 -h or $0 help for more detailed usage information"
+    exit
 fi
 
 #echo -n "What is the name of the network alias you would like to bind secondary IPs to? (eth0, eth1, etc): "
@@ -19,44 +19,106 @@ fi
 #printf "\n"
 #declare -a ETHINT=($interface)
 
-#case $ETHINT in 
+#case $ETHINT in
 
-ETHINT=ens3
+DEFAULT_ETHINT="$(route | awk '$1=="default" {print $NF; exit}')"
+: ${ETHINT:=$DEFAULT_ETHINT}
+
+printf "Using interface: %s\n" "${ETHINT}" >&2
+
+function registered_ips {
+    ip -br addr li ${1:-} | grep -P -o '([0-9]+\.){3}[0-9]+/[0-9]+'
+}
+
+function iface_for {
+    declare -l mac="$1"
+    ip -br link show | awk '$3==mac {print $1}' mac="${mac}" IGNORECASE=1
+}
+
+function default-mac {
+    route | awk '$1=="default" {print $NF}' | uniq
+}
+
+function ec2-meta {
+    curl -s -f http://169.254.169.254/latest/meta-data/"${1#/}"
+}
+
+function aws-macs {
+    local macs
+    declare -a macs
+    mapfile -t macs < <(curl -s -f http://169.254.169.254/latest/meta-data/network/interfaces/macs/)
+    AWS_MACS="${macs[@]}"
+    [ -t 1 ] || printf "%s\n" "${macs[@]}"
+}
 
 function mac-grab {
-	MAC_ADDR=$(ifconfig $ETHINT | sed -n 's/.*ether \([a-f0-9:]*\).*/\1/p')
+    local macs
+    declare -a macs
+    mapfile -t macs < <(aws-macs)
+    if [ "${#macs[@]}" -eq 1 ]; then
+        MAC_ADDR="${macs}"
+    else
+        MAC_ADDR="$(default-mac)"
+    fi
+    [ -t 1 ] || printf "%s" "${MAC_ADDR}"
+}
+
+function public-for {
+    curl -s -f --interface "$1" http://ipinfo.io/ip
 }
 
 function public-grab {
-	PUBLIC=($(curl -s -f http://169.254.169.254/latest/meta-data/public-ipv4))
+    [ -n "${PRIMARYPRIV}" ] || primary-private-grab
+    # PUBLIC=($(curl -s -f http://169.254.169.254/latest/meta-data/public-ipv4))
+    PUBLIC="$(public-for "${PRIMARYPRIV}")"
+    [ -t 1 ] || printf "%s" "${PUBLIC}"
 }
 
 function private-grab {
-	PRIVATE=($(curl -s -f http://169.254.169.254/latest/meta-data/network/interfaces/macs/$MAC_ADDR/local-ipv4s))
+    # PRIVATE=($(curl -s -f http://169.254.169.254/latest/meta-data/network/interfaces/macs/$MAC_ADDR/local-ipv4s))
+    PRIVATE=($(ec2-meta network/interfaces/macs/"${MAC_ADDR:=$(mac-grab)}"/local-ipv4s))
+    [ -t 1 ] || printf "%s\n" "${PRIVATE[@]}"
 }
 
 function primary-private-grab {
-	PRIMARYPRIV=($(curl -s -f http://169.254.169.254/latest/meta-data/local-ipv4))
+    PRIMARYPRIV=($(ec2-meta local-ipv4))
 }
 
+
 function private-loop {
-	for priv in ${PRIVATE[@]:1};
-        do
-                echo "Adding IP: $priv"
-                ip addr add dev $ETHINT $priv/$SUBNET_CIDR_BLOCK
-        done
+    local to_add
+    declare -a to_add
+    mapfile -t to_add < <(comm -13 <(registered_ips | sort) <(printf "%s/${SUBNET_CIDR_BLOCK}\n" "${PRIVATE[@]}" | sort))
+    # for priv in ${PRIVATE[@]:1};
+    # do
+    #     echo "Adding IP: $priv"
+    #     ip addr add dev $ETHINT $priv/$SUBNET_CIDR_BLOCK
+    # done
+    if [ "${#to_add[@]}" -eq 0 ]
+    then
+        printf "No addresses to add!\n"
+    fi
+
+    for addr in "${to_add[@]}"
+    do
+        printf "Adding IP: %s\n" "${addr%/*}"
+        ip addr add dev "${ETHINT}" "${addr}"
+    done
 }
 
 function subnet-cidr-block-grab {
-  SUBNET_CIDR_BLOCK=($(curl -s -f http://169.254.169.254/latest/meta-data/network/interfaces/macs/$MAC_ADDR/subnet-ipv4-cidr-block | sed -e 's/^.*\///'))
+    # SUBNET_CIDR_BLOCK=($(curl -s -f http://169.254.169.254/latest/meta-data/network/interfaces/macs/$MAC_ADDR/subnet-ipv4-cidr-block | sed -e 's/^.*\///'))
+    SUBNET_CIDR="$(ec2-meta network/interfaces/macs/${MAC_ADDR:-$(mac-grab)}/subnet-ipv4-cidr-block)"
+    SUBNET_CIDR_BLOCK="${SUBNET_CIDR#*/}"
+    [ -t 1 ] || printf "%s" "${SUBNET_CIDR_BLOCK}"
 }
 
 case "$1" in
 
-'-h' | '-H' | 'help') printf "\nAliaser v0.01\nUsage: $0 -h\n$0 help\n$0 version\n$0 start\n$0 restart\n$0 stop\n$0 print\n$0 test\n\n"
-	;;
+    '-h' | '-H' | 'help') printf "\nAliaser v0.01\nUsage: $0 -h\n$0 help\n$0 version\n$0 start\n$0 restart\n$0 stop\n$0 print\n$0 test\n\n"
+                          ;;
 
-'version' | '-v' | '-V') printf "aliaser v0.01
+    'version' | '-v' | '-V') printf "aliaser v0.01
 -----------------------------------
 ©2015 Josh Wieder\nhttp://www.joshwieder.net/\njosh.wieder@live.com
 -----------------------------------
@@ -65,47 +127,54 @@ This is free software made available through
 the GNU General Public License v2. You are
 welcome to redistribute it under certain
 conditions - see LICENSE for details.\n\n"
+                             ;;
+
+    'start')
+        mac-grab
+        private-grab
+        subnet-cidr-block-grab
+        private-loop
         ;;
 
-'start') mac-grab
-	private-grab
-  subnet-cidr-block-grab
-	private-loop
-	;;
+    'restart')
+        service network restart
+        mac-grab
+        private-grab
+        subnet-cidr-block-grab
+        private-loop
+        ;;
 
-'restart') service network restart
-	mac-grab
-	private-grab        
-  subnet-cidr-block-grab
-	private-loop
-	;;
+    'stop')
+        service network restart
+        ;;
 
-'stop') service network restart
-	;;
+    'print' | '-p' | '-P')
+        mac-grab
 
-'print' | '-p' | '-P') mac-grab
-	
-	primary-private-grab
-	printf "Primary private IPs:  %s\n" "$PRIMARYPRIV"
+        primary-private-grab
+        printf "Primary private IPs:  %s\n" "$PRIMARYPRIV"
 
-	private-grab
+        private-grab
         for priv in ${PRIVATE[@]:1};
-	do
-		printf "Secondary Private IP:  %s\n" "$priv" 
-	done
+        do
+            printf "Secondary Private IP:  %s\n" "$priv"
+        done
 
-   	public-grab
+        public-grab
         printf "Primary public IP:  %s\n\n" "$PUBLIC";
-#	printf "Interface:  %s\n" "$ETHINT";
+        # printf "Interface:  %s\n" "$ETHINT";
 
-	;;
+        ;;
 
-'test' | 'verify')  mac-grab
-	private-grab
-	curltest=$(curl -s -f --interface ${PRIVATE[@]:1} ipinfo.io/ip)
- 	printf "Secondary public IP: %s\n" "$curltest"
-	;;
+    'test' | 'verify')
+        mac-grab
+        private-grab
+        curltest=($(printf "%s\n" "${PRIVATE[@]}" | xargs -I{} curl -s -f --interface {} ipinfo.io/ip))
+        printf "Primary public IP: %s\n" "${curltest[0]}"
+        printf "Secondary public IP: %s\n" "${curltest[@]:1}"
+        ;;
 
-*) printf "Invalid option - try $0 -h or $0 help for correct usage"
-	;;
+    *)
+        printf "Invalid option - try $0 -h or $0 help for correct usage"
+        ;;
 esac
